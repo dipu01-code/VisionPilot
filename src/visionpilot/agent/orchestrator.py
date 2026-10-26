@@ -334,6 +334,18 @@ class AgentOrchestrator:
         """Get recent trace records"""
         return self.traces[-count:]
 
+    def process_video_image(self,
+                           image_data: bytes,
+                           filename: str,
+                           request_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Process an image through the agentic vision loop (legacy method).
+
+        This is kept for backward compatibility. For video processing,
+        use the enhanced video pipeline.
+        """
+        return self.process_image(image_data, filename, request_id)
+
     def clear_traces(self) -> None:
         """Clear stored traces"""
         self.traces = []
