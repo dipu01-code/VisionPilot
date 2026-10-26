@@ -1,6 +1,72 @@
+# Virtual environments
 .venv/
+.venv_enhanced/
+
+# Python cache and compiled files
 __pycache__/
-.env
-.env.*
 *.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# System files
 .DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE metadata
+.vscode
+.idea
+
+# Logs and temporary files
+*.log
+tmp/
+
+# Project-specific
+.visionpilot/
+*.db
+*.sqlite
+
+# Build and distribution artifacts
+dist/
+build/
+*.egg-info/
+
+# Tests
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Downloaded data files
+*.zip
+*.tar.gz
+*.gz
+*.csv
+*.json
+
+# Audio, image, and video files
+*.mp4
+*.mp3
+*.wav
+*.avi
+*.mov
+*.png
+*.jpg
+*.jpeg
+
+# Configuration files
+*.conf
+*.config
+
+# Editor backups
+*~
