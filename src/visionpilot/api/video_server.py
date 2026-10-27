@@ -16,6 +16,7 @@ import uuid
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
+import numpy as np
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Body
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -211,8 +212,8 @@ async def analyze_video(request: AnalysisRequest = Body(...)):
         request_id = request.request_id or str(uuid.uuid4())
 
         # Process through video agentic loop
-        result = orchestrator.process_video_image(
-            video_data=video_data,
+        result = orchestrator.process_video(
+            image_data=video_data,
             filename=request.filename,
             request_id=request_id
         )
@@ -262,8 +263,8 @@ async def analyze_video_upload(file: UploadFile = File(...)):
         request_id = str(uuid.uuid4())
 
         # Process through video agentic loop
-        result = orchestrator.process_video_image(
-            video_data=video_data,
+        result = orchestrator.process_video(
+            image_data=video_data,
             filename=file.filename or "uploaded_video",
             request_id=request_id
         )

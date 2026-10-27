@@ -13,7 +13,7 @@ import os
 # Add src to path for development
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from visionpilot.api.server import app
+from visionpilot.api.video_server import app
 import uvicorn
 
 if __name__ == "__main__":

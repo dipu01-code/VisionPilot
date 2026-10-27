@@ -19,6 +19,33 @@ from visionpilot.core.video_pipeline import (
 )
 
 
+def _create_test_video() -> bytes:
+    """Create a minimal valid MP4 test video using OpenCV's VideoWriter."""
+    import tempfile
+    width, height = 128, 96
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    tmp = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+    try:
+        writer = cv2.VideoWriter(tmp_path, fourcc, 25, (width, height))
+        if not writer.isOpened():
+            raise RuntimeError("VideoWriter failed to open")
+        for i in range(10):
+            img = np.ones((height, width, 3), dtype=np.uint8) * 128
+            color = (255 - i * 25, i * 25, 255 - i * 25)
+            cv2.rectangle(img, (10 + i * 5, 10), (60 + i * 5, 80), color, -1)
+            writer.write(img)
+        writer.release()
+        with open(tmp_path, 'rb') as f:
+            return f.read()
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 class TestVideoPipeline:
     """Tests for the VideoPipeline class"""
 
@@ -30,39 +57,7 @@ class TestVideoPipeline:
     @pytest.fixture
     def sample_video_bytes(self):
         """Create a sample video as bytes"""
-        # Create a simple test video with a few frames
-        width, height = 640, 480
-        frames = []
-
-        for i in range(5):
-            # Create a frame with a colored object
-            img = np.ones((height, width, 3), dtype=np.uint8) * 128
-
-            # Add a distinct object in each frame
-            color = (255 - i * 50, i * 50, 255 - i * 50)
-            cv2.rectangle(img, (50 + i * 100, 50), (150 + i * 100, 300), color, -1)
-
-            # Encode as JPEG
-            success, buffer = cv2.imencode('.jpg', img)
-            if success:
-                frames.append(buffer.tobytes())
-            else:
-                # Fallback: create a minimal valid JPEG
-                frames.append(b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01')
-
-        # Combine frames (simple approach for testing)
-        # In real implementation, this would be proper video container
-        video_bytes = b''.join(frames)
-        return video_bytes if len(video_bytes) > 0 else self._create_test_video()
-
-    def _create_test_video(self) -> bytes:
-        """Create a minimal test video"""
-        # Create a simple video file in a basic format
-        import struct
-
-        # Very simple video header (just enough for cv2 to read)
-        # This creates a minimal valid video file
-        return b'FFMPEGAVIH264\x00\x00\x00\x00\x00\x00\x00'
+        return _create_test_video()
 
     def test_opencv_version(self, pipeline):
         """Test that OpenCV 5 is being used"""
@@ -126,7 +121,7 @@ class TestVideoPipeline:
             assert isinstance(det, DetectionResult)
             assert det.bounding_box[2] > 0 and det.bounding_box[3] > 0  # w, h > 0
             assert det.frame_number == 1
-            assert det.timestamp_seconds == 0.033  # 1/30
+            assert abs(det.timestamp_seconds - 1/30.0) < 0.001  # 1/30
 
     def test_calculate_distance(self, pipeline):
         """Test distance calculation between detections"""
@@ -179,7 +174,7 @@ class TestEnhancedAgenticVision:
         video_bytes = self._create_test_video_bytes()
 
         # Process video
-        result = orchestrator.process_video_image(video_bytes, 'test_video.mp4')
+        result = orchestrator.process_video(video_bytes, 'test_video.mp4')
 
         # Should have video-specific results
         assert 'response' in result
@@ -188,8 +183,7 @@ class TestEnhancedAgenticVision:
 
     def _create_test_video_bytes(self) -> bytes:
         """Create test video bytes for testing"""
-        # Minimal test video data
-        return b'fake video data for testing'
+        return _create_test_video()
 
 
 if __name__ == '__main__':

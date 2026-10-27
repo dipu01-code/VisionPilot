@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 import logging
 import base64
+import tempfile
+import os
 from collections import deque
 
 logger = logging.getLogger(__name__)
@@ -100,15 +102,48 @@ class VideoPipeline:
     - Video annotation and result aggregation
     """
 
+    # VideoCapture is a C++ wrapper that does not allow arbitrary attributes,
+    # so temp-file paths are tracked in a dict keyed by id(cap).
+    _temp_files: Dict[int, str] = {}
+
     def __init__(self):
         self._opencv_version = cv2.__version__
         logger.info(f"Initializing VideoPipeline with OpenCV {self._opencv_version}")
+        self._temp_files: Dict[int, str] = {}
 
         # Video processing parameters
         self.max_video_size_mb = 100
         self.target_height = 480
         self.target_width = 640
         self.frames_to_analyze = 300  # Max 10 seconds at 30fps
+
+    def _open_video(self, video_data: bytes):
+        """Open a video from raw bytes via a temp file.
+
+        OpenCV 5's VideoCapture only accepts file paths (or device indices),
+        not in-memory buffers, so we spool the bytes to a temp file. The file
+        is removed by :meth:`_close_video` once the capture is released.
+        """
+        tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+        tmp.write(video_data)
+        tmp.flush()
+        tmp.close()
+        cap = cv2.VideoCapture(tmp.name)
+        if not cap.isOpened():
+            os.unlink(tmp.name)
+            raise RuntimeError("Could not open video data")
+        self._temp_files[id(cap)] = tmp.name
+        return cap
+
+    def _close_video(self, cap):
+        """Release a capture opened by :meth:`_open_video` and remove its temp file."""
+        path = self._temp_files.pop(id(cap), None)
+        cap.release()
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
     def validate_video(self, video_data: bytes, file_size: int = 0) -> VideoValidationResult:
         """
@@ -126,10 +161,9 @@ class VideoPipeline:
 
         try:
             # Decode video from bytes
-            np_array = np.frombuffer(video_data, dtype=np.uint8)
-            cap = cv2.VideoCapture(cv2.IMREAD_ANYCODEC)
+            cap = self._open_video(video_data)
 
-            if not cap.read(np_array):
+            if not cap.read()[0]:
                 trace_event["error"] = "Failed to decode video"
                 return VideoValidationResult(
                     is_valid=False,
@@ -151,7 +185,7 @@ class VideoPipeline:
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-            cap.release()
+            self._close_video(cap)
 
             # Quality assessment
             quality_score, quality = self._assess_video_quality(
@@ -208,8 +242,7 @@ class VideoPipeline:
             quality_scores = []
 
             # Create a simpler approach for quality assessment
-            np_array = np.frombuffer(video_data, dtype=np.uint8)
-            cap = cv2.VideoCapture(cv2.IMREAD_ANYCODEC)
+            cap = self._open_video(video_data)
 
             frame_count = 0
             blurry_count = 0
@@ -229,7 +262,9 @@ class VideoPipeline:
                 else:
                     gray = frame
 
+
                 # Blur detection
+                
                 laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
                 if laplacian_var < 50:
                     blurry_count += 1
@@ -248,7 +283,7 @@ class VideoPipeline:
                     (1.0 - min(abs(brightness_normalized - 0.5) * 4, 1.0)) * 0.5
                 )
 
-            cap.release()
+            self._close_video(cap)
 
             avg_quality_score = np.mean(quality_scores) if quality_scores else 0.0
 
@@ -350,8 +385,7 @@ class VideoPipeline:
         detections = []
 
         try:
-            np_array = np.frombuffer(request.video_data, dtype=np.uint8)
-            cap = cv2.VideoCapture(cv2.IMREAD_ANYCODEC)
+            cap = self._open_video(request.video_data)
 
             frame_count = 0
             processed_frames = 0
@@ -394,7 +428,7 @@ class VideoPipeline:
                 if processed_frames % 30 == 0:
                     logger.debug(f"Processed {processed_frames}/{validation.frames_analyzed} frames")
 
-            cap.release()
+            self._close_video(cap)
 
             trace_events.append({
                 "operation": "video_processing_complete",
@@ -426,14 +460,14 @@ class VideoPipeline:
         height, width = gray.shape[:2]
 
         # Detect using contours
-        contour_detections = self._detect_by_contours(gray, width, height, frame_number)
+        contour_detections = self._detect_by_contours(gray, width, height, frame_number, fps)
         detections.extend(contour_detections)
 
         return detections
 
     def _detect_by_contours(self, gray: np.ndarray,
                            width: int, height: int,
-                           frame_number: int) -> List[DetectionResult]:
+                           frame_number: int, fps: float) -> List[DetectionResult]:
         """Detect objects using contour analysis"""
         detections = []
 
@@ -456,7 +490,7 @@ class VideoPipeline:
                 if min_area < area < max_area:
                     x, y, w_bbox, h_bbox = cv2.boundingRect(contour)
                     center_x, center_y = x + w_bbox/2, y + h_bbox/2
-                    timestamp = frame_number / (30 if width < height else 29)
+                    timestamp = frame_number / fps if fps and fps > 0 else frame_number / 30.0
 
                     # Calculate confidence based on area and compactness
                     perimeter = cv2.arcLength(contour, True)

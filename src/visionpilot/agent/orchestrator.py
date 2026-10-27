@@ -18,6 +18,7 @@ from enum import Enum
 import logging
 
 from ..core.pipeline import VisionPipeline, ImageRequest, ImageResponse
+from ..core.video_pipeline import VideoPipeline, VideoRequest, VideoResponse
 from .types import AgentState, AgentDecision, AgentTrace, ToolType
 from .decision_engine import DecisionEngine
 
@@ -139,6 +140,167 @@ class AgentOrchestrator:
                             traces: List[Dict[str, Any]]) -> ImageResponse:
         """Run the OpenCV 5 vision pipeline and record traces"""
         response = self.pipeline.process_request(request)
+
+        # Add trace for OpenCV operations
+        for event in response.trace_events:
+            trace = AgentTrace(
+                trace_id=str(uuid.uuid4()),
+                request_id=request.request_id,
+                observation_id=observation_id,
+                timestamp=time.time(),
+                opencv_operation=event.get("operation"),
+                visual_findings={"details": event},
+                confidence_indicators={"quality_score": response.validation.quality_score} if response.validation else None
+            )
+            traces.append(trace.to_dict())
+
+        return response
+
+    def process_video(self,
+                     image_data: bytes,
+                     filename: str,
+                     request_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Process a video through the enhanced video pipeline.
+
+        Returns the video response plus agent decision and traces.
+        """
+        request_id = request_id or str(uuid.uuid4())
+        observation_id = str(uuid.uuid4())
+        all_traces: List[Dict[str, Any]] = []
+
+        self.current_state = AgentState.RECEIVED
+        all_traces.append(AgentTrace(
+            trace_id=str(uuid.uuid4()),
+            request_id=request_id,
+            observation_id=observation_id,
+            timestamp=time.time(),
+            opencv_operation="video_request_received",
+            visual_findings={"filename": filename}
+        ).to_dict())
+
+        video_request = VideoRequest(
+            request_id=request_id,
+            video_data=image_data,
+            filename=filename
+        )
+
+        self.current_state = AgentState.ANALYZING
+        video_response = self._run_video_pipeline(video_request, observation_id, all_traces)
+
+        self.current_state = AgentState.DECIDING
+        decision = self.decision_engine.decide(video_response)
+        decision.decision_id = str(uuid.uuid4())
+
+        all_traces.append(AgentTrace(
+            trace_id=str(uuid.uuid4()),
+            request_id=request_id,
+            observation_id=observation_id,
+            timestamp=time.time(),
+            visual_findings={
+                "detection_count": len(video_response.detections),
+                "detection_labels": [d.label for d in video_response.detections],
+                "quality_score": video_response.validation.quality_score
+            },
+            decision=decision
+        ).to_dict())
+
+        result = self._execute_video_action(video_response, decision, request_id, observation_id, all_traces)
+        self.current_state = AgentState.COMPLETED if decision.state == AgentState.COMPLETED else AgentState.FAILED
+        self._store_trace(result.get("traces", []))
+        return result
+
+    def _run_video_pipeline(self,
+                           request: VideoRequest,
+                           observation_id: str,
+                           traces: List[Dict[str, Any]]) -> VideoResponse:
+        """Run the video pipeline and record traces"""
+        video_pipeline = self.pipeline if isinstance(self.pipeline, VideoPipeline) else VideoPipeline()
+        response = video_pipeline.process_video_request(request)
+
+        for event in response.trace_events:
+            traces.append(AgentTrace(
+                trace_id=str(uuid.uuid4()),
+                request_id=request.request_id,
+                observation_id=observation_id,
+                timestamp=time.time(),
+                opencv_operation=event.get("operation"),
+                visual_findings={"details": event}
+            ).to_dict())
+
+        return response
+
+    def _execute_video_action(self,
+                             response: VideoResponse,
+                             decision: AgentDecision,
+                             request_id: str,
+                             observation_id: str,
+                             traces: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Execute the agent's decision for a video response."""
+        tool_result = None
+        if decision.tool:
+            tool_result = self._invoke_tool(decision.tool, decision.tool_args, response)
+            traces.append(AgentTrace(
+                trace_id=str(uuid.uuid4()),
+                request_id=request_id,
+                observation_id=observation_id,
+                timestamp=time.time(),
+                tool_arguments=decision.tool_args,
+                tool_result=tool_result
+            ).to_dict())
+
+        if decision.needs_human_approval:
+            outcome = "pending_approval"
+        elif decision.state == AgentState.COMPLETED:
+            outcome = "success"
+        elif decision.state == AgentState.REJECTED:
+            outcome = "rejected"
+        else:
+            outcome = "failed"
+
+        traces.append(AgentTrace(
+            trace_id=str(uuid.uuid4()),
+            request_id=request_id,
+            observation_id=observation_id,
+            timestamp=time.time(),
+            final_outcome=outcome
+        ).to_dict())
+
+        return {
+            "request_id": request_id,
+            "response": {
+                "validation": {
+                    "is_valid": response.validation.is_valid,
+                    "quality": response.validation.quality.value,
+                    "quality_score": response.validation.quality_score
+                },
+                "detections": [
+                    {
+                        "label": d.label,
+                        "confidence": d.confidence,
+                        "bounding_box": d.bounding_box,
+                        "center": d.center,
+                        "area_pixels": d.area_pixels,
+                        "frame_number": d.frame_number,
+                        "timestamp_seconds": d.timestamp_seconds
+                    }
+                    for d in response.detections
+                ],
+                "measurements": response.measurements,
+                "annotated_video_base64": response.annotated_video_base64
+            },
+            "decision": {
+                "state": decision.state.value,
+                "reason": decision.reason,
+                "confidence": decision.confidence,
+                "tool": decision.tool.value if decision.tool else None,
+                "needs_human_approval": decision.needs_human_approval
+            },
+            "tool_result": tool_result,
+            "outcome": outcome,
+            "traces": traces,
+            "processing_time_ms": response.processing_time_ms
+        }
 
         # Add trace for OpenCV operations
         for event in response.trace_events:
